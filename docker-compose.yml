@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jobhunter
+      POSTGRES_PASSWORD: jobhunter
+      POSTGRES_DB: jobhunter
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobhunter"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "6379:6379"
+
+  api:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - storage:/app/storage
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: ./backend
+    command: celery -A app.core.celery_app.celery worker -l info
+    env_file: .env
+    depends_on:
+      - api
+      - redis
+    volumes:
+      - storage:/app/storage
+
+  beat:
+    build: ./backend
+    command: celery -A app.core.celery_app.celery beat -l info
+    env_file: .env
+    depends_on:
+      - redis
+    volumes:
+      - storage:/app/storage
+
+  flower:
+    build: ./backend
+    command: celery -A app.core.celery_app.celery flower --port=5555
+    env_file: .env
+    depends_on:
+      - redis
+    ports:
+      - "5555:5555"
+
+  web:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  storage:

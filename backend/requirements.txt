@@ -1,0 +1,40 @@
+# --- web ---
+fastapi>=0.115,<0.140
+uvicorn[standard]>=0.34
+python-multipart>=0.0.18
+# --- db ---
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+alembic==1.14.0
+pysqlite3-binary; platform_system != "Windows"
+# --- auth / security ---
+passlib[bcrypt]==1.7.4
+pyjwt==2.10.1
+cryptography==44.0.0
+# --- settings ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+# --- queue ---
+celery==5.4.0
+redis==5.2.1
+flower==2.0.1
+# --- llm / ai ---
+anthropic==0.42.0
+openai==1.59.6
+google-generativeai==0.8.3
+sentence-transformers==3.3.1
+chromadb==0.5.23
+# --- scraping / automation ---
+httpx==0.28.1
+beautifulsoup4==4.12.3
+playwright==1.49.1
+# --- documents ---
+reportlab==4.2.5
+python-docx==1.1.2
+# --- observability ---
+structlog==24.4.0
+prometheus-client==0.21.1
+# --- misc ---
+tenacity==9.0.0
+jinja2==3.1.5
