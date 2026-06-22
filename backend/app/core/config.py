@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     enable_remoteok: bool = True
     enable_weworkremotely: bool = True
     enable_ycombinator: bool = True
+    # company ATS boards (public APIs, automation-friendly) — set the *_list vars below
+    enable_greenhouse: bool = False
+    enable_lever: bool = False
+    enable_ashby: bool = False
+    greenhouse_boards: str = ""   # comma list of board tokens, e.g. "gitlab,figma"
+    lever_companies: str = ""     # comma list of lever slugs, e.g. "netflix,plaid"
+    ashby_orgs: str = ""          # comma list of ashby slugs, e.g. "ramp,linear"
     enable_linkedin: bool = False
     enable_indeed: bool = False
     enable_naukri: bool = False
@@ -72,7 +79,39 @@ class Settings(BaseSettings):
     enable_wellfound: bool = False
     enable_foundit: bool = False
 
+    # apply safety: real network submissions only happen when this is True.
+    # Left False so nothing is submitted by accident; flip on once you've reviewed output.
+    enable_real_apply: bool = False
+
+    # browser robot: run headless (True, for servers) or visible (False, for local testing).
+    playwright_headless: bool = True
+    # If >0 AND running headed, pause on a CAPTCHA so YOU can solve it in the open window;
+    # the bot waits up to this many seconds, then continues. This is a human-in-the-loop
+    # assist (you solve the check), NOT an automated CAPTCHA bypass.
+    captcha_manual_wait_seconds: int = 0
+
+    # on-demand "Apply" button: run in-process (False) or via Celery/Redis (True).
+    enable_celery: bool = False
+
+    # notifications (needs_review / CAPTCHA alerts). All optional → falls back to log.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    notify_email: str = ""
+
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+
+    @staticmethod
+    def _csv(value: str) -> list[str]:
+        return [v.strip() for v in (value or "").split(",") if v.strip()]
+
+    def greenhouse_boards_list(self) -> list[str]:
+        return self._csv(self.greenhouse_boards)
+
+    def lever_companies_list(self) -> list[str]:
+        return self._csv(self.lever_companies)
+
+    def ashby_orgs_list(self) -> list[str]:
+        return self._csv(self.ashby_orgs)
 
     @property
     def storage_path(self) -> Path:
@@ -85,6 +124,9 @@ class Settings(BaseSettings):
             "remoteok": self.enable_remoteok,
             "weworkremotely": self.enable_weworkremotely,
             "ycombinator": self.enable_ycombinator,
+            "greenhouse": self.enable_greenhouse,
+            "lever": self.enable_lever,
+            "ashby": self.enable_ashby,
             "linkedin": self.enable_linkedin,
             "indeed": self.enable_indeed,
             "naukri": self.enable_naukri,

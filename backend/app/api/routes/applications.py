@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agents.tracking import TrackingAgent
 from app.api.deps import get_current_user
-from app.db.models import Application, ApplicationStatus, User
+from app.core.config import settings
+from app.db.models import Application, ApplicationStatus, Job, User
 from app.db.session import get_db
 from app.schemas.schemas import ApplicationCreate, ApplicationOut
 
@@ -29,12 +30,23 @@ def list_applications(
 @router.post("", response_model=dict)
 def create_application(
     payload: ApplicationCreate,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     from app.tasks.application_tasks import apply_to_job
 
-    res = apply_to_job.delay(user.id, payload.job_id, payload.auto_submit)
-    return {"task_id": res.id, "status": "queued"}
+    if not db.get(Job, payload.job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Default: run in-process so the button works with no Redis/worker. Set ENABLE_CELERY
+    # to dispatch to a Celery worker instead (production with a broker).
+    if settings.enable_celery:
+        res = apply_to_job.delay(user.id, payload.job_id, payload.auto_submit)
+        return {"task_id": res.id, "status": "queued"}
+
+    background.add_task(apply_to_job, user.id, payload.job_id, payload.auto_submit)
+    return {"status": "processing"}
 
 
 @router.patch("/{app_id}/status", response_model=ApplicationOut)

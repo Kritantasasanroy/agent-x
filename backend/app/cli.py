@@ -50,6 +50,34 @@ def discover() -> None:
         print(agent.run())
 
 
+def autopilot() -> None:
+    """Run the full loop once, synchronously (no Redis/Celery needed).
+
+    Ideal entrypoint for a free scheduler (e.g. GitHub Actions cron): discover ->
+    score -> tailor -> apply for every active, non-paused user -> send due follow-ups.
+    """
+    from app.agents.discovery import DiscoveryAgent
+    from app.agents.outreach import OutreachAgent
+    from app.agents.pipeline import process_user_applications
+    from app.db.models import User
+
+    db = session()
+    try:
+        with DiscoveryAgent(db) as disc:
+            disc_result = disc.run()
+        print(f"discovery: {disc_result}")
+
+        users = db.query(User).filter(User.is_active.is_(True)).all()
+        for user in users:
+            result = process_user_applications(db, user)
+            print(f"applications[{user.email}]: {result}")
+
+        sent = OutreachAgent(db).process_followups()
+        print(f"outreach_followups_sent: {sent}")
+    finally:
+        db.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="jobhunter")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -61,6 +89,7 @@ def main() -> None:
     cu.add_argument("--full-name", default="")
     cu.add_argument("--admin", action="store_true")
     sub.add_parser("discover")
+    sub.add_parser("autopilot")
 
     args = parser.parse_args()
     if args.cmd == "init-db":
@@ -69,6 +98,8 @@ def main() -> None:
         create_user(args.email, args.password, args.full_name, args.admin)
     elif args.cmd == "discover":
         discover()
+    elif args.cmd == "autopilot":
+        autopilot()
 
 
 if __name__ == "__main__":

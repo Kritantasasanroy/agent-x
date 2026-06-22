@@ -17,6 +17,8 @@ from pathlib import Path
 from app.agents.base import BaseAgent
 from app.core.config import settings
 from app.db.models import Application, ApplicationStatus, Job, Profile, Resume
+from app.services import greenhouse_apply
+from app.services.notify import notify
 
 CAPTCHA_MARKERS = [
     "captcha", "recaptcha", "hcaptcha", "i'm not a robot", "are you human",
@@ -64,6 +66,22 @@ class ApplicationAgent(BaseAgent):
 
     # ------------------------------------------------------------------ #
     def _drive(self, application, job, profile, resume, auto_submit) -> None:
+        # Preferred path: Greenhouse boards accept a clean API application (no CAPTCHA).
+        if job and (job.source == "greenhouse" or greenhouse_apply.gh_ids(job)):
+            result = greenhouse_apply.apply(profile, job, resume)
+            application.answers = result.fields or {}
+            if result.submitted:
+                application.status = ApplicationStatus.applied
+                application.submitted_at = datetime.now(timezone.utc)
+                application.confirmation = "greenhouse_api_ok"
+                self.log.info("application_submitted_greenhouse", app_id=application.id)
+                return
+            if result.dry_run:
+                self._needs_review(application, f"greenhouse_dry_run:{result.reason}")
+                return
+            self._needs_review(application, f"greenhouse_apply_failed:{result.reason}")
+            return
+
         try:
             from playwright.sync_api import sync_playwright
         except Exception:  # noqa: BLE001
@@ -77,7 +95,7 @@ class ApplicationAgent(BaseAgent):
         shots = self._shot_dir(application.id)
         with sync_playwright() as p:
             try:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=settings.playwright_headless)
             except Exception as exc:  # noqa: BLE001
                 self._needs_review(application, f"browser_launch_failed:{exc}")
                 return
@@ -87,13 +105,15 @@ class ApplicationAgent(BaseAgent):
             page = ctx.new_page()
             page.goto(job.apply_url, wait_until="domcontentloaded", timeout=45000)
 
-            content = (page.content() or "").lower()
-            if any(m in content for m in CAPTCHA_MARKERS):
+            if self._blocking_captcha(page):
                 page.screenshot(path=str(shots / "captcha.png"))
                 application.screenshots = [str(shots / "captcha.png")]
-                self._needs_review(application, "captcha_detected")
-                browser.close()
-                return
+                # Human-in-the-loop: if running headed with a manual wait, let YOU solve the
+                # CAPTCHA in the open window, then continue. We never solve/bypass it ourselves.
+                if not self._wait_for_human_captcha(page):
+                    self._needs_review(application, "captcha_detected")
+                    browser.close()
+                    return
 
             # Best-effort generic form fill (sites vary — extend per ATS).
             answers = self._fill_common_fields(page, profile)
@@ -104,7 +124,12 @@ class ApplicationAgent(BaseAgent):
             application.screenshots = [str(shots / "filled.png")]
             application.answers = answers
 
-            if auto_submit and not (profile and profile.user and profile.user.automation_paused):
+            paused = bool(profile and profile.user and profile.user.automation_paused)
+            if not settings.enable_real_apply:
+                # Safety gate: form is filled + screenshotted, but we never click submit
+                # until you turn on ENABLE_REAL_APPLY. Nothing is sent to the company.
+                self._needs_review(application, "dry_run_filled")
+            elif auto_submit and not paused:
                 submitted = self._submit(page)
                 if submitted:
                     page.screenshot(path=str(shots / "confirmation.png"))
@@ -168,10 +193,74 @@ class ApplicationAgent(BaseAgent):
                 continue
         return False
 
+    def _blocking_captcha(self, page) -> bool:
+        """True only for an ACTUAL human-verification wall, not a passive/invisible widget.
+
+        Many legit ATS forms (Lever, etc.) embed an invisible reCAPTCHA script — the word
+        'recaptcha' in the HTML must NOT block us. We flag a real blocker when the page is an
+        interstitial (Cloudflare 'Just a moment', 'Attention Required', access wall) or when
+        CAPTCHA markers are present AND there's no fillable form to proceed with.
+        """
+        interstitial = (
+            "just a moment", "attention required", "checking your browser",
+            "verify you are human", "access denied", "are you a robot",
+        )
+        title = (page.title() or "").lower()
+        if any(t in title for t in interstitial):
+            return True
+        content = (page.content() or "").lower()
+        if not any(m in content for m in CAPTCHA_MARKERS):
+            return False
+        # markers present — only blocking if we can't actually fill anything
+        try:
+            fields = page.query_selector_all("input:not([type=hidden]), textarea, select")
+            visible = sum(1 for f in fields if f.is_visible())
+        except Exception:  # noqa: BLE001
+            visible = 0
+        return visible < 2
+
+    def _wait_for_human_captcha(self, page) -> bool:
+        """Pause on a CAPTCHA so a human can solve it in a visible browser, then resume.
+
+        Only active when running headed (`PLAYWRIGHT_HEADLESS=false`) with a positive
+        `CAPTCHA_MANUAL_WAIT_SECONDS`. Polls until the CAPTCHA markers disappear (you solved
+        it) or the wait elapses. Returns True if it cleared. We do NOT solve it ourselves.
+        """
+        wait = settings.captcha_manual_wait_seconds
+        if settings.playwright_headless or wait <= 0:
+            return False
+        notify(
+            "Solve the CAPTCHA in the open browser window",
+            body=f"You have ~{wait}s. The bot will continue once it's cleared.",
+            url=page.url,
+        )
+        self.log.info("captcha_waiting_for_human", seconds=wait)
+        elapsed = 0
+        step = 3
+        while elapsed < wait:
+            page.wait_for_timeout(step * 1000)
+            elapsed += step
+            content = (page.content() or "").lower()
+            if not any(m in content for m in CAPTCHA_MARKERS):
+                self.log.info("captcha_cleared_by_human", elapsed=elapsed)
+                return True
+        return False
+
     def _needs_review(self, application: Application, reason: str) -> None:
         application.status = ApplicationStatus.needs_review
         application.needs_review_reason = reason
         self.log.info("application_needs_review", app_id=application.id, reason=reason)
+        # Ping the human out-of-band (CAPTCHA/ambiguous form). Never bypass the check.
+        if reason.startswith("captcha") or "captcha" in reason:
+            try:
+                job = self.db.get(Job, application.job_id)
+                notify(
+                    "Application needs you (CAPTCHA / human check)",
+                    body=f"{job.title} @ {job.company}" if job else reason,
+                    url=(job.apply_url if job else ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.log.warning("notify_failed", error=str(exc))
 
     def _state_path(self, user_id: str, create: bool = False) -> str | None:
         d = settings.storage_path / "playwright" / user_id

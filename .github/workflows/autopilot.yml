@@ -1,0 +1,66 @@
+name: autopilot
+
+# Free 24/7 scheduler: GitHub runs this on a cron with NO server of your own.
+# It discovers jobs, scores them, tailors resumes/cover letters, applies to
+# automation-friendly boards, and sends due recruiter follow-ups — all against your
+# hosted database. Public repos get unlimited Actions minutes.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   DATABASE_URL      e.g. postgresql+psycopg://USER:PASS@HOST/DB   (Neon/Supabase)
+#   JWT_SECRET, ENCRYPTION_KEY
+#   ANTHROPIC_API_KEY (or OPENAI_API_KEY / GEMINI_API_KEY) and set LLM_PROVIDER
+# Optional secrets:
+#   ENABLE_REAL_APPLY=true, GREENHOUSE_BOARDS, LEVER_COMPANIES, ASHBY_ORGS,
+#   SMTP_* , TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, NOTIFY_EMAIL
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours (UTC). Tighten/loosen as you like.
+  workflow_dispatch: {}       # also runnable on-demand from the Actions tab
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ENABLE_REAL_APPLY: ${{ secrets.ENABLE_REAL_APPLY }}
+      ENABLE_GREENHOUSE: "true"
+      ENABLE_LEVER: "true"
+      ENABLE_ASHBY: "true"
+      GREENHOUSE_BOARDS: ${{ secrets.GREENHOUSE_BOARDS }}
+      LEVER_COMPANIES: ${{ secrets.LEVER_COMPANIES }}
+      ASHBY_ORGS: ${{ secrets.ASHBY_ORGS }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMTP_FROM: ${{ secrets.SMTP_FROM }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Ensure schema
+        run: python -m app.cli init-db
+      - name: Run autopilot (discover -> score -> tailor -> apply -> follow-ups)
+        run: python -m app.cli autopilot

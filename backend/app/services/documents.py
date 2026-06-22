@@ -1,16 +1,18 @@
-"""Render resume / cover-letter text to PDF + DOCX on disk."""
+"""Render resume / cover-letter text to PDF + DOCX on disk.
+
+reportlab / python-docx are imported lazily. If either is missing (e.g. a minimal
+deployment), we fall back to writing a plain-text file with the same base name so the
+pipeline keeps working instead of crashing.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from docx import Document
-from reportlab.lib.pagesizes import LETTER
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-
 from app.core.config import settings
+from app.core.logging import get_logger
+
+log = get_logger("documents")
 
 
 def _outdir(kind: str) -> Path:
@@ -19,7 +21,22 @@ def _outdir(kind: str) -> Path:
     return d
 
 
+def _txt_fallback(text: str, name: str, kind: str, ext: str) -> str:
+    path = _outdir(kind) / f"{name}.{ext}.txt"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
 def to_pdf(text: str, name: str, kind: str = "resumes") -> str:
+    try:
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    except Exception:  # noqa: BLE001
+        log.warning("reportlab_unavailable_txt_fallback")
+        return _txt_fallback(text, name, kind, "pdf")
+
     path = _outdir(kind) / f"{name}.pdf"
     doc = SimpleDocTemplate(str(path), pagesize=LETTER, topMargin=0.6 * inch, bottomMargin=0.6 * inch)
     styles = getSampleStyleSheet()
@@ -37,6 +54,12 @@ def to_pdf(text: str, name: str, kind: str = "resumes") -> str:
 
 
 def to_docx(text: str, name: str, kind: str = "resumes") -> str:
+    try:
+        from docx import Document
+    except Exception:  # noqa: BLE001
+        log.warning("python_docx_unavailable_txt_fallback")
+        return _txt_fallback(text, name, kind, "docx")
+
     path = _outdir(kind) / f"{name}.docx"
     document = Document()
     for block in text.split("\n\n"):
